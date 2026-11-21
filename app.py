@@ -76,7 +76,7 @@ def get_page_cache_path(book_id, page_num):
     book_folder = os.path.join(CACHE_DIR, book_id)
     os.makedirs(book_folder, exist_ok=True)
     # v2 cache includes word-by-word timestamps and spoiler-free labels
-    return os.path.join(book_folder, f"page_{page_num}_v2.json")
+    return os.path.join(book_folder, f"page_{page_num}_v3.json")
 
 def is_page_cached(book_id, page_num):
     return os.path.exists(get_page_cache_path(book_id, page_num))
@@ -276,6 +276,28 @@ def build_personality_cast(characters):
     return cast
 
 # --- 4. Pass 2: Spoiler-Free Script & Word-Level Audio Builder ---
+EMOTION_MODIFIERS = {
+    "normal":  {"rate": 0,   "pitch": 0,  "volume": 0},
+    "soft":    {"rate": -10, "pitch": 1,  "volume": -25},
+    "slow":    {"rate": -16, "pitch": -2, "volume": -5},
+    "whisper": {"rate": -12, "pitch": 2,  "volume": -40},
+    "angry":   {"rate": 10,  "pitch": -3, "volume": 25},
+    "excited": {"rate": 12,  "pitch": 4,  "volume": 15},
+    "sad":     {"rate": -14, "pitch": -4, "volume": -15},
+    "serious": {"rate": -8,  "pitch": -4, "volume": 5},
+}
+
+def apply_emotion(profile, emotion):
+    mod = EMOTION_MODIFIERS.get((emotion or "normal").lower().strip(), EMOTION_MODIFIERS["normal"])
+    base_rate = int(str(profile.get("rate", "+0%")).replace("%", "") or 0)
+    base_pitch = int(str(profile.get("pitch", "+0Hz")).replace("Hz", "") or 0)
+
+    final_rate = max(-40, min(40, base_rate + mod["rate"]))
+    final_pitch = max(-15, min(15, base_pitch + mod["pitch"]))
+    final_vol = max(-50, min(30, mod["volume"]))
+
+    return f"{final_rate:+d}%", f"{final_pitch:+d}Hz", f"{final_vol:+d}%"
+
 def ai_director(text_chunk, book_info, page_num):
     allowed_roles = list(book_info["cast"].keys())
     already_revealed = get_revealed_up_to_page(book_info, page_num)
@@ -288,11 +310,14 @@ def ai_director(text_chunk, book_info, page_num):
 
     STRICT RULES:
     1. CLEANUP FIRST: Ignore and remove page numbers, running headers, repeated book/chapter titles at the top or bottom, website links, or copyright footers.
-    2. SMART DIALOGUE TAG REMOVAL (AUDIO DRAMA STYLE):
-       - Completely REMOVE plain, redundant dialogue tags like "I said", "he said", "she asked", "Rich Dad said", "my poor dad replied", etc., whenever they ONLY identify the speaker. The character's unique voice and on-screen badge already show who is talking.
-       - DO NOT remove tags that contain an action, emotion, or important detail (e.g., "Rich Dad said, smiling warmly" or "he whispered nervously"). Keep those as "Narrator" lines so no story details are lost.
+    2. AUDIO DRAMA TAG REMOVAL + VOCAL EMOTION:
+       - Completely REMOVE plain dialogue tags ("I said", "he asked", "Rich Dad replied") AND vocal-delivery tags ("said Rich Dad slowly, softly", "he whispered", "she shouted angrily", "he said quietly").
+       - Instead of speaking those vocal-delivery words aloud, capture that tone in the "emotion" field of the character's spoken line using ONE of:
+         "normal", "soft", "slow", "whisper", "angry", "excited", "sad", "serious".
+       - Example: '"Look closely," said Rich Dad slowly, softly.' -> role: "Rich Dad", emotion: "soft", text: "Look closely."
+       - ONLY keep a separate "Narrator" line if there is a real physical action (e.g., "He walked to the window").
     3. VOICE SWITCHING: Whenever ANY other character speaks or is quoted (text inside quotation marks), split that quote into its own item and assign it to their exact role from Allowed Roles (NEVER assign another person's quote to "Narrator").
-    4. Use "Narrator" ONLY for narration, action/emotion descriptions, and lines spoken by the first-person narrator ("I" / their younger self).
+    4. Use "Narrator" ONLY for narration, physical actions, and lines spoken by the first-person narrator ("I" / their younger self).
     5. If a quoted speaker is not in Allowed Roles, use "Other Male" or "Other Female".
     6. Strip quotation marks from the spoken text.
     7. SPOILER-FREE BRACKETED NAMES:
@@ -309,6 +334,7 @@ def ai_director(text_chunk, book_info, page_num):
             {{
                 "role": "Exact Role from Allowed Roles",
                 "display_role": "Role or Role (Short Name)",
+                "emotion": "normal",
                 "text": "Exact words to be spoken"
             }}
         ]
@@ -332,6 +358,7 @@ async def synthesize_segments(script_parts, cast_profiles):
     for part in script_parts:
         role = part.get("role", "Narrator").strip()
         display_role = part.get("display_role", role).strip() or role
+        emotion = part.get("emotion", "normal").strip().lower()
         text_to_speak = part.get("text", "").strip()
         if not text_to_speak:
             continue
@@ -344,21 +371,24 @@ async def synthesize_segments(script_parts, cast_profiles):
         else:
             profile = fallback_profile
 
-        # Request WordBoundary timestamps (compatible with both edge-tts v6 and v7)
+        rate_str, pitch_str, vol_str = apply_emotion(profile, emotion)
+
         try:
             communicate = edge_tts.Communicate(
                 text_to_speak,
                 profile["voice"],
-                rate=profile["rate"],
-                pitch=profile["pitch"],
+                rate=rate_str,
+                pitch=pitch_str,
+                volume=vol_str,
                 boundary="WordBoundary"
             )
         except TypeError:
             communicate = edge_tts.Communicate(
                 text_to_speak,
                 profile["voice"],
-                rate=profile["rate"],
-                pitch=profile["pitch"]
+                rate=rate_str,
+                pitch=pitch_str,
+                volume=vol_str
             )
 
         audio_bytes = b""
@@ -379,6 +409,7 @@ async def synthesize_segments(script_parts, cast_profiles):
             segments.append({
                 "role": role,
                 "display_role": display_role,
+                "emotion": emotion,
                 "text": text_to_speak,
                 "words": word_timings,
                 "audio_b64": base64.b64encode(audio_bytes).decode("ascii")
@@ -930,6 +961,8 @@ if uploaded_file is not None:
                     st.error(f"Could not prepare book: {e}")
                     st.stop()
 
+        else:
+            st.success(f"🧠 Loaded **{memory[book_id]['title']}** from memory! (Already scanned)")
         book_info = memory[book_id]
 
         if st.session_state.get("active_book_id") != book_id:
