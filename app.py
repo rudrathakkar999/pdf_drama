@@ -969,12 +969,30 @@ def render_karaoke_player(page_num, total_pages, segments, role_colors, auto_sta
     components.html(player_html, height=565, scrolling=False)
 
 # --- 6. App Interface (Clean & Non-Techie) ---
-st.set_page_config(page_title="Audio Drama Reader", page_icon="🎭", layout="centered")
-st.title("Audio Drama Reader 🎭")
+st.set_page_config(page_title="PDF Drama", page_icon="🎬", layout="centered")
+
+# --- Simple Friends & Family Password Gate ---
+APP_PASSWORD = st.secrets.get("APP_PASSWORD", "")
+if APP_PASSWORD:
+    if not st.session_state.get("authenticated", False):
+        st.title("🎬 PDF Drama")
+        pwd = st.text_input("Enter access password", type="password")
+        if st.button("Unlock"):
+            if pwd == APP_PASSWORD:
+                st.session_state["authenticated"] = True
+                st.rerun()
+            else:
+                st.error("Wrong password.")
+        st.stop()
+
+st.title("PDF Drama 🎬")
 
 uploaded_file = st.file_uploader("Upload your PDF book to start listening", type="pdf")
 
 if uploaded_file is not None:
+    if uploaded_file.size > 30 * 1024 * 1024:
+        st.error("File is too large (max 30 MB). Please upload a smaller PDF.")
+        st.stop()
     file_bytes = uploaded_file.getvalue()
     book_id = get_book_id(file_bytes)
     memory = load_memory()
