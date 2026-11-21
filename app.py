@@ -76,7 +76,7 @@ def get_page_cache_path(book_id, page_num):
     book_folder = os.path.join(CACHE_DIR, book_id)
     os.makedirs(book_folder, exist_ok=True)
     # v2 cache includes word-by-word timestamps and spoiler-free labels
-    return os.path.join(book_folder, f"page_{page_num}_v3.json")
+    return os.path.join(book_folder, f"page_{page_num}_v4.json")
 
 def is_page_cached(book_id, page_num):
     return os.path.exists(get_page_cache_path(book_id, page_num))
@@ -278,13 +278,13 @@ def build_personality_cast(characters):
 # --- 4. Pass 2: Spoiler-Free Script & Word-Level Audio Builder ---
 EMOTION_MODIFIERS = {
     "normal":  {"rate": 0,   "pitch": 0,  "volume": 0},
-    "soft":    {"rate": -10, "pitch": 1,  "volume": -25},
-    "slow":    {"rate": -16, "pitch": -2, "volume": -5},
-    "whisper": {"rate": -12, "pitch": 2,  "volume": -40},
-    "angry":   {"rate": 10,  "pitch": -3, "volume": 25},
-    "excited": {"rate": 12,  "pitch": 4,  "volume": 15},
-    "sad":     {"rate": -14, "pitch": -4, "volume": -15},
-    "serious": {"rate": -8,  "pitch": -4, "volume": 5},
+    "soft":    {"rate": -18, "pitch": 2,  "volume": -35},
+    "slow":    {"rate": -24, "pitch": -3, "volume": -10},
+    "whisper": {"rate": -20, "pitch": 4,  "volume": -50},
+    "angry":   {"rate": 16,  "pitch": -5, "volume": 30},
+    "excited": {"rate": 18,  "pitch": 6,  "volume": 20},
+    "sad":     {"rate": -22, "pitch": -6, "volume": -25},
+    "serious": {"rate": -14, "pitch": -6, "volume": 10},
 }
 
 def apply_emotion(profile, emotion):
@@ -461,7 +461,7 @@ def preload_pages_in_background(book_id, pages_to_preload, book_info):
         t.start()
 
 # --- 5. Word-by-Word Live Audio Reader (HTML + JS) ---
-def render_karaoke_player(page_num, total_pages, segments, role_colors, auto_start, has_next_page):
+def render_karaoke_player(page_num, total_pages, segments, role_colors, auto_start, has_next_page,book_id=""):
     lines_html = []
     js_segments = []
 
@@ -470,6 +470,8 @@ def render_karaoke_player(page_num, total_pages, segments, role_colors, auto_sta
         display_role = seg.get("display_role", role)
         color = role_colors.get(role.lower(), "#2563eb")
         safe_role = html.escape(display_role)
+        emotion = seg.get("emotion", "normal").strip().lower()
+        emo_html = f'<span style="font-size:11px; color:#64748b; font-style:italic; margin-right:6px;">({html.escape(emotion)})</span>' if emotion != "normal" else ""
 
         words_data = seg.get("words", [])
         if words_data:
@@ -490,7 +492,7 @@ def render_karaoke_player(page_num, total_pages, segments, role_colors, auto_sta
 
         lines_html.append(f"""
         <div class="seg" id="seg-{i}" onclick="jumpTo({i})">
-            <span class="badge" style="background:{color};">{safe_role}</span>
+            <span class="badge" style="background:{color};">{safe_role}</span>{emo_html}
             <span class="txt">{word_spans}</span>
         </div>
         """)
@@ -657,6 +659,17 @@ def render_karaoke_player(page_num, total_pages, segments, role_colors, auto_sta
         .next-page-btn:hover {{
             background: #1d4ed8;
         }}
+        .bookmark-bar {{
+         display: none;
+         background: #fef3c7;
+         border: 1px solid #f59e0b;
+         color: #92400e;
+         padding: 8px 12px;
+         border-radius: 8px;
+         font-size: 13px;
+         margin-bottom: 10px;
+     }}
+
     </style>
     </head>
     <body>
@@ -677,6 +690,7 @@ def render_karaoke_player(page_num, total_pages, segments, role_colors, auto_sta
             </div>
         </div>
 
+        <div class="bookmark-bar" id="bookmarkBar"></div>
         <div class="reader" id="readerBox">
             {joined_lines}
             <div class="next-page-box" id="nextPageBox">
@@ -695,6 +709,19 @@ def render_karaoke_player(page_num, total_pages, segments, role_colors, auto_sta
             const segments = {segments_json};
             const autoStart = {"true" if auto_start else "false"};
             const hasNextPage = {"true" if has_next_page else "false"};
+
+            const bookId = "{book_id}";
+            const currentPageNum = {page_num};
+            const bmKey = "audioDrama_bm_" + bookId;
+            const savedBm = parseInt(localStorage.getItem(bmKey) || "0", 10);
+
+            if (currentPageNum === 1 && savedBm > 1) {{
+                const bmBar = document.getElementById("bookmarkBar");
+                bmBar.innerHTML = "🔖 <b>Device Bookmark:</b> You last left off on <b>Page " + savedBm + "</b> — type <b>" + savedBm + "</b> in <i>Go to Page</i> above to resume.";
+                bmBar.style.display = "block";
+            }} else if (currentPageNum > 1) {{
+                localStorage.setItem(bmKey, String(currentPageNum));
+            }}
 
             let currentIdx = 0;
             let lastWordIdx = -1;
@@ -740,45 +767,57 @@ def render_karaoke_player(page_num, total_pages, segments, role_colors, auto_sta
                 }}
             }}
 
-            // Realistic Paper Page-Turn Sound (Web Audio API)
+            // Realistic Multi-Stage Paper Page-Turn Sound (Web Audio API)
             function playPageTurnSound() {{
                 try {{
                     const Ctx = window.AudioContext || window.webkitAudioContext;
                     if (!audioCtx) audioCtx = new Ctx();
                     if (audioCtx.state === "suspended") audioCtx.resume();
 
-                    const duration = 0.42;
+                    const now = audioCtx.currentTime;
                     const sampleRate = audioCtx.sampleRate;
-                    const bufferSize = Math.floor(sampleRate * duration);
-                    const buffer = audioCtx.createBuffer(1, bufferSize, sampleRate);
-                    const data = buffer.getChannelData(0);
 
-                    // Shaped noise: soft paper lift -> airy swish -> gentle settle
-                    for (let i = 0; i < bufferSize; i++) {{
-                        const t = i / bufferSize;
-                        const env = Math.sin(Math.PI * t) * (0.6 + 0.4 * Math.sin(Math.PI * 3 * t));
-                        data[i] = (Math.random() * 2 - 1) * env * 0.45;
+                    function makePaperBurst(startOffset, duration, startFreq, endFreq, peakGain) {{
+                        const len = Math.floor(sampleRate * duration);
+                        const buf = audioCtx.createBuffer(1, len, sampleRate);
+                        const data = buf.getChannelData(0);
+
+                        // Softened pink-like noise so it sounds like paper fibers, not TV static
+                        let lastOut = 0;
+                        for (let i = 0; i < len; i++) {{
+                            const white = Math.random() * 2 - 1;
+                            lastOut = (lastOut + 0.08 * white) / 1.08;
+                            const t = i / len;
+                            const env = Math.sin(Math.PI * t) * Math.pow(1 - t, 0.5);
+                            data[i] = lastOut * env * 2.2;
+                        }}
+
+                        const src = audioCtx.createBufferSource();
+                        src.buffer = buf;
+
+                        const filter = audioCtx.createBiquadFilter();
+                        filter.type = "bandpass";
+                        filter.Q.value = 0.9;
+                        filter.frequency.setValueAtTime(startFreq, now + startOffset);
+                        filter.frequency.exponentialRampToValueAtTime(endFreq, now + startOffset + duration);
+
+                        const gain = audioCtx.createGain();
+                        gain.gain.setValueAtTime(0.001, now + startOffset);
+                        gain.gain.linearRampToValueAtTime(peakGain, now + startOffset + duration * 0.25);
+                        gain.gain.exponentialRampToValueAtTime(0.001, now + startOffset + duration);
+
+                        src.connect(filter);
+                        filter.connect(gain);
+                        gain.connect(audioCtx.destination);
+                        src.start(now + startOffset);
                     }}
 
-                    const noise = audioCtx.createBufferSource();
-                    noise.buffer = buffer;
-
-                    const filter = audioCtx.createBiquadFilter();
-                    filter.type = "bandpass";
-                    filter.Q.value = 1.2;
-                    filter.frequency.setValueAtTime(1100, audioCtx.currentTime);
-                    filter.frequency.exponentialRampToValueAtTime(3000, audioCtx.currentTime + 0.18);
-                    filter.frequency.exponentialRampToValueAtTime(900, audioCtx.currentTime + duration);
-
-                    const gain = audioCtx.createGain();
-                    gain.gain.setValueAtTime(0.01, audioCtx.currentTime);
-                    gain.gain.linearRampToValueAtTime(0.85, audioCtx.currentTime + 0.12);
-                    gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
-
-                    noise.connect(filter);
-                    filter.connect(gain);
-                    gain.connect(audioCtx.destination);
-                    noise.start();
+                    // Stage 1: Finger lifting the corner of the page
+                    makePaperBurst(0.00, 0.11, 1800, 3200, 0.22);
+                    // Stage 2: Main airy paper flip swish
+                    makePaperBurst(0.07, 0.26, 2400, 950, 0.35);
+                    // Stage 3: Soft page settling flat
+                    makePaperBurst(0.28, 0.12, 700, 320, 0.16);
                 }} catch (e) {{
                     console.log("Page turn sound skipped:", e);
                 }}
@@ -1071,7 +1110,8 @@ if uploaded_file is not None:
                 segments=segments,
                 role_colors=role_colors,
                 auto_start=st.session_state.get("auto_play", False),
-                has_next_page=(current_page < total_pages)
+                has_next_page=(current_page < total_pages),
+                book_id=book_id
             )
 
             combined_mp3 = b"".join(base64.b64decode(s["audio_b64"]) for s in segments)
