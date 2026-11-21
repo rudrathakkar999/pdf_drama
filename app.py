@@ -288,9 +288,11 @@ def ai_director(text_chunk, book_info, page_num):
 
     STRICT RULES:
     1. CLEANUP FIRST: Ignore and remove page numbers, running headers, repeated book/chapter titles at the top or bottom, website links, or copyright footers.
-    2. Break the remaining story text into sequential speaking parts without skipping or changing any story words.
+    2. SMART DIALOGUE TAG REMOVAL (AUDIO DRAMA STYLE):
+       - Completely REMOVE plain, redundant dialogue tags like "I said", "he said", "she asked", "Rich Dad said", "my poor dad replied", etc., whenever they ONLY identify the speaker. The character's unique voice and on-screen badge already show who is talking.
+       - DO NOT remove tags that contain an action, emotion, or important detail (e.g., "Rich Dad said, smiling warmly" or "he whispered nervously"). Keep those as "Narrator" lines so no story details are lost.
     3. VOICE SWITCHING: Whenever ANY other character speaks or is quoted (text inside quotation marks), split that quote into its own item and assign it to their exact role from Allowed Roles (NEVER assign another person's quote to "Narrator").
-    4. Use "Narrator" ONLY for narration, dialogue tags ("he said", "my dad asked"), and lines spoken by the first-person narrator ("I said" / their younger self).
+    4. Use "Narrator" ONLY for narration, action/emotion descriptions, and lines spoken by the first-person narrator ("I" / their younger self).
     5. If a quoted speaker is not in Allowed Roles, use "Other Male" or "Other Female".
     6. Strip quotation marks from the spoken text.
     7. SPOILER-FREE BRACKETED NAMES:
